@@ -1,5 +1,7 @@
-# Winter-Road-Surface-Classifier
-Team Surface 3 — Yikwa Sandrakh, Wenda Waipo, Agata Melani Artificial Intelligence Implementation Technologies, Baikal School of BRICS, INRTU
+# Winter Road Surface Classifier
+
+**Team Surface 3** — Yikwa Sandrakh, Wenda Waipo, Agata Melani
+Artificial Intelligence Implementation Technologies · Baikal School of BRICS, INRTU
 
 ## Project direction
 
@@ -15,7 +17,7 @@ Single-label classification, one verdict per frame. Not object detection: surfac
 
 | | |
 |---|---|
-| Footage recorded |
+| Footage recorded | 20 drives (independence not yet verified) |
 | Frames labelled | 256 |
 | Training runs | 2, both discarded — see below |
 | Usable result | none yet |
@@ -32,10 +34,10 @@ Two models were trained during exploration. Neither is used, and neither one's m
 
 1. `epochs: 3` with `warmup_epochs: 3.0` — the learning rate never left warmup, peaking at 0.00081 against a target of 0.01. Total training time was 43 seconds.
 2. 221 annotated instances across four classes, of which **wet had 8**. Validation contained one wet object.
-3. The imagery was stock dashcam footage — Montevideo street scenes, a palm-lined road at sunset, a US interstate — not Irkutsk.
-4. Annotation boxes spanned sky, trees and oncoming traffic, with widths clustered at 1.0.
+3. Annotation boxes spanned sky, trees and oncoming traffic, with widths clustered at 1.0.
+4. The run therefore says nothing about Irkutsk conditions specifically — see **Data** for the dataset scope and its limitation.
 
-Cause 4 is what settled the task framing: annotators were drawing whole-frame verdicts, which is a classification label expressed as a box.
+Cause 3 is what settled the task framing: annotators were drawing whole-frame verdicts, which is a classification label expressed as a box.
 
 ## Pipeline
 
@@ -44,20 +46,22 @@ Cause 4 is what settled the task framing: annotators were drawing whole-frame ve
 | Frame extraction from video | `extract_frames.py` | `<session>/<class>/` frames |
 | Annotation (optional) | Roboflow | labelled export |
 | Regroup an export by session | `roboflow_to_sessions.py` | `<session>/<class>/` frames |
-| Split, train, evaluate | `winter_road_surface.ipynb` | weights, metrics, confusion matrix |
+| Split, train, evaluate | `winter_road_surface_colab.ipynb` | weights, metrics, confusion matrix |
 
 ```bash
 # 1. video -> labelled frames
-
+python extract_frames.py scan    --videos ./footage     # writes labels.csv
+python extract_frames.py report  --videos ./footage     # check thresholds
+python extract_frames.py extract --videos ./footage --out ./frames
 
 # 2. or, if the frames were labelled in Roboflow
-
+python roboflow_to_sessions.py --export ./roboflow-export --out ./frames --write
 
 # 3. check the split before training anything
+python train.py --dry_run --data_root ./frames
 
-
-# 4. zip and train 
-
+# 4. zip and train in Colab
+zip -r frames.zip frames
 ```
 
 ### Session-level splitting
@@ -77,10 +81,13 @@ The splitter reserves one session of each class for validation and for test befo
 
 ## Data
 
-- **Source:** road-facing footage, phone-mounted, recorded while driving in Irkutsk
+**Source: public dashcam footage**, spanning several countries, climates and camera setups. This is a deliberate scope choice. A full range of winter conditions — icy roads above all — cannot be recorded to a semester timetable, and public video already covers variety we could not reach by driving.
+
+**The limitation, stated rather than hidden:** domain shift. Camera, mount height, climate, road markings and traffic conventions all differ from Irkutsk, so accuracy measured on this dataset does not transfer to local roads unmeasured. Locally recorded footage, once collected, becomes a fine-tuning set on top of this one rather than a replacement for it.
+
 - **Classes:** dry, wet, snow-covered, icy
 - **Target:** ~1,000 frames per class (600 minimum), sampled at one frame per three seconds
-- **Sessions:** 8–10 distinct drives per class, varied by date, route, time of day and lighting
+- **Sessions:** 8–10 distinct source videos per class, varied by location, time of day and lighting. One source video is one session.
 - **Split:** 70/15/15 by session; realised proportions drift because sessions are indivisible, so the actual figures are reported
 - **Quality filtering:** blurred frames and near-duplicates from stationary stretches are dropped, with thresholds derived from the footage rather than fixed in advance
 - **Class balance:** ice will be under-represented; class weighting is applied and per-class metrics reported instead of accuracy
@@ -107,7 +114,54 @@ Because the number of sessions is small, results are reported as a mean and stan
 
 **Roboflow for annotation only.** Its training facility and its automatic train/validation/test division are not used — that division operates at frame level and reintroduces the leakage above. Training happens in this repository's notebook, where the partitioning is explicit and reproducible.
 
+## Delivery
+
+How a model like this reaches the dispatcher it is for:
+
+```
+camera feed  →  inference service  →  label + confidence  →  dispatcher view
+(sampled every     (ResNet-18 as ONNX,    {camera_id, timestamp,    (sections ranked
+ few minutes)       one CPU box)           class, probability}       by hazard)
+```
+
+**The latency budget is minutes, not milliseconds.** Treatment rounds are planned on a timescale of tens of minutes, so batched inference over the camera feeds is sufficient. No real-time engineering, and no GPU at inference for ResNet-18 at 224 × 224.
+
+**Abstain rather than guess.** Below a confidence threshold the service returns `uncertain` instead of a class. A confident wrong answer about ice is worse than no answer, which is the same reasoning behind reporting the ice→wet error rate separately.
+
+**Corrections feed back.** Every prediction is logged. What a dispatcher overrides becomes labelled training data, which is the cheapest source of new labels there is.
+
+## Where the accuracy comes from
+
+Ordered by return per unit of effort, not by sophistication.
+
+| # | Lever | Why it pays | Effort |
+|---|---|---|---|
+| 1 | More wet and icy examples | 8 wet instances cannot be learned; this is the binding constraint | Weeks of collection |
+| 2 | A written labelling guide | No model exceeds the consistency of its labels | One team session |
+| 3 | Train past warmup | Nothing converged in 43 seconds | Free |
+| 4 | Temporal smoothing | Consecutive frames of one drive should agree; a majority vote over a short window removes flicker | Free — the data is video |
+| 5 | Fine-tune on local footage | Closes the domain gap between public video and Irkutsk | Once local data exists |
+| 6 | Larger backbone | ResNet-50 helps only once the dataset can support it | Minutes, but premature now |
+| 7 | Calibration and abstention | Turns an uncertain prediction into a useful "unknown" | Low |
+
+Rows 2, 3 and 4 cost nothing and come before any change of architecture. Row 4 is the one most easily missed: because the frames come from continuous video, neighbouring frames are nearly the same scene and should receive the same label, so averaging predictions over a short window buys accuracy with no extra data and no extra training.
+
 ## Repository
 
+```
+README.md
+docs/project_brief.md
+extract_frames.py              # video -> labelled frames, with quality filtering
+roboflow_to_sessions.py        # Roboflow export -> session-grouped frames
+train.py                       # session-level split + training (CLI)
+winter_road_surface_colab.ipynb
+requirements.txt
+```
 
 ## Open questions
+
+- Final choice of user: dispatchers (prioritising treatment) or drivers (real-time warnings). This repository proceeds on the dispatcher assumption, not yet confirmed by the team.
+- How many source videos contain genuine icy conditions, which is the binding constraint on the whole project.
+- The gap between 221 annotated instances and the ~4,000-frame target, and the 8 wet examples in particular.
+- Crop fractions for the road region, which vary by source video rather than being fixed by one mount.
+- Whether any locally recorded footage will be added as a fine-tuning set this winter.
