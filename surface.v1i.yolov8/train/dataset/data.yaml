@@ -1,0 +1,11 @@
+path: /Users/sandrakhyikwa/AI_Tech/Winter-Road-Surface-Classifier/surface.v1i.yolov8/train/dataset
+train: train/images
+val: val/images
+test: test/images
+
+nc: 4
+names:
+  0: Snow
+  1: Ice
+  2: wet
+  3: dry
